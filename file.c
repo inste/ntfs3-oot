@@ -13,6 +13,7 @@
 #include <linux/compat.h>
 #include <linux/falloc.h>
 #include <linux/fiemap.h>
+#include <linux/uio.h>
 
 #include "debug.h"
 #include "ntfs.h"
@@ -70,12 +71,25 @@ static long ntfs_compat_ioctl(struct file *filp, u32 cmd, unsigned long arg)
 /*
  * ntfs_getattr - inode_operations::getattr
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
 int ntfs_getattr(struct user_namespace *mnt_userns, const struct path *path,
 		 struct kstat *stat, u32 request_mask, u32 flags)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+int ntfs_getattr(const struct path *path, struct kstat *stat,
+		 u32 request_mask, u32 flags)
+#else
+int ntfs_getattr(struct vfsmount *mnt, struct dentry *dentry,
+		 struct kstat *stat)
+#endif
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 	struct inode *inode = d_inode(path->dentry);
+#else
+	struct inode *inode = d_inode(dentry);
+#endif
 	struct ntfs_inode *ni = ntfs_i(inode);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 	if (is_compressed(ni))
 		stat->attributes |= STATX_ATTR_COMPRESSED;
 
@@ -83,11 +97,18 @@ int ntfs_getattr(struct user_namespace *mnt_userns, const struct path *path,
 		stat->attributes |= STATX_ATTR_ENCRYPTED;
 
 	stat->attributes_mask |= STATX_ATTR_COMPRESSED | STATX_ATTR_ENCRYPTED;
+#endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
 	generic_fillattr(mnt_userns, inode, stat);
+#else
+	generic_fillattr(inode, stat);
+#endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 	stat->result_mask |= STATX_BTIME;
 	stat->btime = ni->i_crtime;
+#endif
 	stat->blksize = ni->mi.sbi->cluster_size; /* 512, 1K, ..., 2M */
 
 	return 0;
@@ -729,7 +750,11 @@ out:
 /*
  * ntfs3_setattr - inode_operations::setattr
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
 int ntfs3_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+#else
+int ntfs3_setattr(struct dentry *dentry,
+#endif
 		  struct iattr *attr)
 {
 	struct super_block *sb = dentry->d_sb;
@@ -740,7 +765,7 @@ int ntfs3_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 	umode_t mode = inode->i_mode;
 	int err;
 
-	if (sbi->options->noacsrules) {
+	if (sbi->options.noacsrules) {
 		/* "No access rules" - Force any changes of time etc. */
 		attr->ia_valid |= ATTR_FORCE;
 		/* and disable for editing some attributes. */
@@ -748,7 +773,12 @@ int ntfs3_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 		ia_valid = attr->ia_valid;
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
 	err = setattr_prepare(mnt_userns, dentry, attr);
+#else
+	err = setattr_prepare(dentry, attr);
+#endif
+
 	if (err)
 		goto out;
 
@@ -773,10 +803,18 @@ int ntfs3_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 		ni->ni_flags |= NI_FLAG_UPDATE_PARENT;
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
 	setattr_copy(mnt_userns, inode, attr);
+#else
+	setattr_copy(inode, attr);
+#endif
 
 	if (mode != inode->i_mode) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
 		err = ntfs_acl_chmod(mnt_userns, inode);
+#else
+		err = ntfs_acl_chmod(inode);
+#endif
 		if (err)
 			goto out;
 
@@ -1116,8 +1154,10 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	}
 
 	if (!inode_trylock(inode)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
 		if (iocb->ki_flags & IOCB_NOWAIT)
 			return -EAGAIN;
+#endif
 		inode_lock(inode);
 	}
 
@@ -1188,7 +1228,7 @@ static int ntfs_file_release(struct inode *inode, struct file *file)
 	int err = 0;
 
 	/* If we are last writer on the inode, drop the block reservation. */
-	if (sbi->options->prealloc && ((file->f_mode & FMODE_WRITE) &&
+	if (sbi->options.prealloc && ((file->f_mode & FMODE_WRITE) &&
 				      atomic_read(&inode->i_writecount) == 1)) {
 		ni_lock(ni);
 		down_write(&ni->file.run_lock);
@@ -1211,9 +1251,14 @@ int ntfs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	int err;
 	struct ntfs_inode *ni = ntfs_i(inode);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 	err = fiemap_prep(inode, fieinfo, start, &len, ~FIEMAP_FLAG_XATTR);
 	if (err)
 		return err;
+#else
+	if (fieinfo->fi_flags & FIEMAP_FLAG_XATTR)
+		return -EOPNOTSUPP;
+#endif
 
 	ni_lock(ni);
 

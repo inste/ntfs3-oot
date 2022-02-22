@@ -10,6 +10,8 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 
+#include <linux/version.h>
+
 #include "debug.h"
 #include "ntfs.h"
 #include "ntfs_fs.h"
@@ -1021,7 +1023,11 @@ int ntfs_sb_write(struct super_block *sb, u64 lbo, size_t bytes,
 	u32 op = blocksize - off;
 	struct buffer_head *bh;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	if (!wait && (sb->s_flags & SB_SYNCHRONOUS))
+#else
+	if (!wait && (sb->s_flags & MS_SYNCHRONOUS))
+#endif
 		wait = 1;
 
 	for (; bytes; block += 1, off = 0, op = blocksize) {
